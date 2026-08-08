@@ -2,21 +2,12 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import multer from 'multer';
-import { v2 as cloudinary } from 'cloudinary';
 import { createServer as createViteServer } from 'vite';
 import { initialSiteSettings, initialServices, initialGallery, initialTestimonials, initialBlogs, initialFaqs } from './src/data/initialData';
 import { Lead } from './src/types';
 
 const app = express();
 const PORT = 3000;
-
-// Configure Cloudinary credentials from environment variables
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-  secure: true,
-});
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
@@ -419,54 +410,41 @@ app.post('/api/admin/faqs/clean-blank', (_req, res) => {
   res.json({ success: true, faqs: db.faqs });
 });
 
-// Configure Multer for Direct Memory Uploads to Cloudinary
-const storage = multer.memoryStorage();
+// Configure Multer for Direct File Uploads (Supports large videos and images without base64 overhead)
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, UPLOADS_DIR);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname) || (file.mimetype.includes('video') ? '.mp4' : '.png');
+    const cleanName = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9]/g, '_').slice(0, 30);
+    cb(null, `${cleanName}_${Date.now()}${ext}`);
+  },
+});
 
 const upload = multer({
   storage,
   limits: { fileSize: 300 * 1024 * 1024 }, // 300MB limit for high quality videos/photos
 });
 
-// Helper function to upload buffer to Cloudinary
-const uploadBufferToCloudinary = (buffer: Buffer, mimeType: string): Promise<any> => {
-  return new Promise((resolve, reject) => {
-    const isVideo = mimeType.startsWith('video/');
-    const uploadStream = cloudinary.uploader.upload_stream(
-      {
-        folder: 'astrology_uploads',
-        resource_type: isVideo ? 'video' : 'auto',
-      },
-      (error, result) => {
-        if (error) return reject(error);
-        resolve(result);
-      }
-    );
-    uploadStream.end(buffer);
-  });
-};
-
-// Multipart Upload Endpoint (POST /api/upload-file)
-app.post('/api/upload-file', upload.single('file'), async (req, res) => {
+// Multipart Upload Endpoint (Primary for file inputs)
+app.post('/api/upload-file', upload.single('file'), (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
-    const result = await uploadBufferToCloudinary(req.file.buffer, req.file.mimetype);
-    res.json({
-      success: true,
-      url: result.secure_url,
-      mimeType: req.file.mimetype,
-    });
-  } catch (err: any) {
+    const publicUrl = `/uploads/${req.file.filename}`;
+    res.json({ success: true, url: publicUrl, mimeType: req.file.mimetype });
+  } catch (err) {
     console.error('File upload error:', err);
-    res.status(500).json({ error: err?.message || 'Failed to upload file to Cloudinary' });
+    res.status(500).json({ error: 'Failed to upload file' });
   }
 });
 
-// Upload File Base64 Handler (POST /api/upload)
-app.post('/api/upload', async (req, res) => {
+// Upload File (Base64 fallback handler)
+app.post('/api/upload', (req, res) => {
   try {
-    const { fileData } = req.body;
+    const { fileData, fileName } = req.body;
     if (!fileData || typeof fileData !== 'string') {
       return res.status(400).json({ error: 'No file data provided' });
     }
@@ -486,29 +464,45 @@ app.post('/api/upload', async (req, res) => {
       }
     }
 
-    // Strip out whitespace/newlines from base64 string
+    // Strip out all whitespace/newlines from base64 string
     base64Data = base64Data.replace(/[\r\n\s]/g, '');
 
     if (!base64Data) {
       return res.status(400).json({ error: 'Invalid Base64 string' });
     }
 
-    const dataUri = `data:${mimeType};base64,${base64Data}`;
-    const isVideo = mimeType.startsWith('video/');
+    const buffer = Buffer.from(base64Data, 'base64');
+    
+    let ext = 'png';
+    if (mimeType.includes('mp4')) ext = 'mp4';
+    else if (mimeType.includes('webm')) ext = 'webm';
+    else if (mimeType.includes('quicktime') || mimeType.includes('mov')) ext = 'mov';
+    else if (mimeType.includes('mkv') || mimeType.includes('matroska')) ext = 'mkv';
+    else if (mimeType.includes('avi')) ext = 'avi';
+    else if (mimeType.includes('3gp')) ext = '3gp';
+    else if (mimeType.includes('ogg')) ext = 'ogv';
+    else if (mimeType.includes('jpeg') || mimeType.includes('jpg')) ext = 'jpg';
+    else if (mimeType.includes('png')) ext = 'png';
+    else if (mimeType.includes('webp')) ext = 'webp';
+    else if (mimeType.includes('gif')) ext = 'gif';
+    else {
+      const parts = mimeType.split('/');
+      if (parts[1]) ext = parts[1].replace(/[^a-z0-9]/g, '');
+    }
 
-    const result = await cloudinary.uploader.upload(dataUri, {
-      folder: 'astrology_uploads',
-      resource_type: isVideo ? 'video' : 'auto',
-    });
+    const cleanFileName = (fileName || 'upload')
+      .replace(/[^a-zA-Z0-9]/g, '_')
+      .slice(0, 30);
+    const saveName = `${cleanFileName}_${Date.now()}.${ext}`;
+    const filePath = path.join(UPLOADS_DIR, saveName);
 
-    res.json({
-      success: true,
-      url: result.secure_url,
-      mimeType,
-    });
-  } catch (err: any) {
+    fs.writeFileSync(filePath, buffer);
+
+    const publicUrl = `/uploads/${saveName}`;
+    res.json({ success: true, url: publicUrl, mimeType });
+  } catch (err) {
     console.error('File upload error:', err);
-    res.status(500).json({ error: err?.message || 'Failed to upload file to Cloudinary' });
+    res.status(500).json({ error: 'Failed to upload file' });
   }
 });
 
