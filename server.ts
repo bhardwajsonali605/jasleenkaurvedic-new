@@ -497,26 +497,33 @@ app.patch('/api/admin/leads/:id', async (req, res) => {
 // ADMIN DELETE LEAD
 // ======================================================
 
-app.delete('/api/admin/leads/:id', async (req, res) => {
+app.delete('/api/admin/gallery/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-
     const db = await loadDB();
 
-    db.leads = db.leads.filter(
-      (l) => l.id !== id
+    db.gallery = db.gallery.filter(
+      (item) => item.id !== req.params.id
     );
 
-    await saveDB(db);
+    const saved = await saveDB(db);
 
-    res.json({
+    if (!saved) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to save gallery changes to Supabase.',
+      });
+    }
+
+    return res.json({
       success: true,
+      gallery: db.gallery,
     });
   } catch (error) {
-    console.error(error);
+    console.error('❌ Gallery delete error:', error);
 
-    res.status(500).json({
-      error: 'Unable to delete lead.',
+    return res.status(500).json({
+      success: false,
+      error: 'Unable to delete gallery item.',
     });
   }
 });
