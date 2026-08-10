@@ -433,14 +433,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  const handleDeleteGallery = async (id: string) => {
-    try {
-      await fetch(`/api/admin/gallery/${id}`, { method: 'DELETE' });
-      onRefreshData();
-    } catch (e) {
-      console.error('Delete error', e);
+const handleDeleteGallery = async (id: string) => {
+  if (!window.confirm('Delete this gallery item permanently?')) {
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/admin/gallery/${id}`, {
+      method: 'DELETE',
+    });
+
+    const data = await res.json();
+
+    if (!res.ok || !data.success) {
+      throw new Error(
+        data.error || 'Failed to delete gallery item'
+      );
     }
-  };
+
+    alert('Gallery item deleted successfully.');
+
+    onRefreshData();
+  } catch (error) {
+    console.error('Gallery delete error:', error);
+
+    alert(
+      error instanceof Error
+        ? error.message
+        : 'Failed to delete gallery item.'
+    );
+  }
+};
 
   const handleSaveTestimonial = async () => {
     if (!newTestimonial.name || !newTestimonial.reviewEn) return alert('Fill name & review');
